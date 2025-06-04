@@ -5,13 +5,15 @@
 #include "tgaimage.h"
 #include "model.h"
 #include "geometry.h"
+#include "texture.h"
 
 const TGAColor white = TGAColor(255, 255, 255, 255);
 const TGAColor red   = TGAColor(255, 0,   0,   255);
-const TGAColor green = TGAColor(0, 255, 0,   0);
+const TGAColor green = TGAColor(0, 255, 0,   255);
+const TGAColor blue = TGAColor(0, 0, 255,   255);
 Model *model = nullptr;
-const int width = 400;
-const int height = 400;
+const int width = 1024;
+const int height = 1024;
 
 void line(int x0, int y0, int x1, int y1, TGAImage &image, const TGAColor &color)
 {
@@ -78,13 +80,27 @@ void triangle(Vec2i t0, Vec2i t1, Vec2i t2, TGAImage &image, const TGAColor &col
 	} 
 }
 
-Vec3f baycentric(Vec2i *pts, Vec2i p)
+Vec3f barycentric(Vec2i *pts, Vec2i p)
 {
 	Vec3f vec1(pts[2][0] - pts[0][0], pts[1][0] - pts[0][0], pts[0][0] - p[0]);
 	Vec3f vec2(pts[2][1] - pts[0][1], pts[1][1] - pts[0][1], pts[0][1] - p[1]);
-	Vec3f cross = vec1 ^ vec2;
-	if (std::abs(cross.z) < 1) return Vec3f(-1,1,1);
-	return Vec3f(1.f - (cross.x + cross.y)/cross.z, cross.y/cross.z, cross.x/cross.z); 
+	Vec3f c = cross(vec1, vec2);
+	if (std::abs(c.z) < 1) return Vec3f(-1,1,1);
+	return Vec3f(1.f - (c.x + c.y)/c.z, c.y/c.z, c.x/c.z); 
+}
+
+Vec3f barycentric(Vec3f A, Vec3f B, Vec3f C, Vec3f p)
+{
+	Vec3f s[2];
+	for (int i=2; i--; ) {
+		s[i][0] = C[i]-A[i];
+		s[i][1] = B[i]-A[i];
+		s[i][2] = A[i]-p[i];
+	}
+	Vec3f u = cross(s[0], s[1]);
+	if (std::abs(u[2])>1e-2) // dont forget that u[2] is integer. If it is zero then triangle ABC is degenerate
+		return Vec3f(1.f-(u.x+u.y)/u.z, u.y/u.z, u.x/u.z);
+	return Vec3f(-1,1,1); // in this case generate negative coordinates, it will be thrown away by the rasterizator
 }
 
 void triangle(Vec2i *pts, TGAImage &image, const TGAColor &color)
@@ -105,11 +121,65 @@ void triangle(Vec2i *pts, TGAImage &image, const TGAColor &color)
 	{
 		for (p.y = bboxmin.y; p.y <= bboxmax.y; p.y++)
 		{
-			Vec3f bc_coordinates = baycentric(pts, p);
+			Vec3f bc_coordinates = barycentric(pts, p);
 			if (bc_coordinates.x < 0 || bc_coordinates.y < 0 || bc_coordinates.z < 0) continue;
 			image.set(p.x, p.y, color);
 		}
 	}
+}
+
+void triangle(Vec3f *pts, Vec2f *uvs, float *zbuffer, TGAImage &image, Texture &texture) {
+	Vec2f bboxmin( std::numeric_limits<float>::max(),  std::numeric_limits<float>::max());
+	Vec2f bboxmax(-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max());
+	Vec2f clamp(image.get_width()-1, image.get_height()-1);
+	for (int i=0; i<3; i++) {
+		for (int j=0; j<2; j++) {
+			bboxmin[j] = std::max(0.f,      std::min(bboxmin[j], pts[i][j]));
+			bboxmax[j] = std::min(clamp[j], std::max(bboxmax[j], pts[i][j]));
+		}
+	}
+	Vec3f P;
+	for (P.x=bboxmin.x; P.x<=bboxmax.x; P.x++) {
+		for (P.y=bboxmin.y; P.y<=bboxmax.y; P.y++) {
+			Vec3f bc_screen  = barycentric(pts[0], pts[1], pts[2], P);
+			if (bc_screen.x<0 || bc_screen.y<0 || bc_screen.z<0) continue;
+			P.z = 0;
+			Vec2f puv(0.f, 0.f);
+			for (int i=0; i<3; i++)
+			{
+				P.z += pts[i][2]*bc_screen[i];
+				puv.x += uvs[i][0]*bc_screen[i];
+				puv.y += uvs[i][1]*bc_screen[i];
+			}
+			if (zbuffer[int(P.x+P.y*width)]<P.z) {
+				zbuffer[int(P.x+P.y*width)] = P.z;
+				TGAColor color = texture.get_color(puv);
+				image.set(P.x, P.y, color);
+			}
+		}
+	}
+}
+
+void rasterize(Vec2i p0, Vec2i p1, TGAImage &image, const TGAColor &color, int ybuffer[])
+{
+	if (p0.x > p1.x)
+	{
+		std::swap(p0, p1);
+	}
+	for (int x = p0.x; x <= p1.x; x++)
+	{
+		float t = (x - p0.x)/(float)(p1.x - p0.x);
+		int y = p0.y * (1 - t) + p1.y * t;
+		if (ybuffer[x] < y)
+		{
+			ybuffer[x] = y;
+			image.set(x, 8, color);
+		}
+	}
+}
+
+Vec3f world2screen(Vec3f v) {
+	return Vec3f(int((v.x+1.)*width/2.+.5), int((v.y+1.)*height/2.+.5), v.z);
 }
 
 int main(int argc, char** argv) {
@@ -124,114 +194,35 @@ int main(int argc, char** argv) {
 	
 	TGAImage image(width, height, TGAImage::RGB);
 
+	Texture texture("obj/african_head_diffuse.tga");
+
 	Vec3f light_dir(0,0,-1); // define light_dir
 
+	float *zbuffer = new float[width*height];
+	for (int i=width*height; i--; zbuffer[i] = -std::numeric_limits<float>::max());
+
 	for (int i=0; i<model->nfaces(); i++) { 
-		std::vector<int> face = model->face(i); 
-		Vec2i screen_coords[3]; 
-		Vec3f world_coords[3]; 
-		for (int j=0; j<3; j++) { 
-			Vec3f v = model->vert(face[j]); 
-			screen_coords[j] = Vec2i((v.x+1.)*width/2., (v.y+1.)*height/2.); 
-			world_coords[j]  = v; 
+		std::vector<Vec3i> face = model->face(i);
+		Vec3f vert[3];
+		Vec3f pts[3];
+		Vec2f uv[3];
+		for (int j=0; j<3; j++) {
+			vert[j] = model->vert(face[j][0]);
+			pts[j] = world2screen(vert[j]);
+			uv[j] = model->uv(face[j][1]);
 		} 
-		Vec3f n = (world_coords[2]-world_coords[0])^(world_coords[1]-world_coords[0]); 
+		Vec3f n = cross(vert[2]-vert[0], vert[1]-vert[0]); 
 		n.normalize(); 
 		float intensity = n*light_dir; 
-		if (intensity>0) { 
-			triangle(screen_coords[0], screen_coords[1], screen_coords[2], image, TGAColor(intensity*255, intensity*255, intensity*255, 255)); 
+		if (intensity>0) {
+			triangle(pts, uv, zbuffer, image, texture);
 		}
 	}
 
-	// for (int i=0; i<model->nfaces(); i++)
-	// {
-	// 	std::vector<int> face = model->face(i);
-	// 	for (int j = 0; j < 3; j++)
-	// 	{
-	// 		Vec3f v0 = model->vert(face[j]);
-	// 		Vec3f v1 = model->vert(face[(j + 1) % 3]);
-	// 		int x0 = (v0.x+1.)*width/2.; 
-	// 		int y0 = (v0.y+1.)*height/2.; 
-	// 		int x1 = (v1.x+1.)*width/2.; 
-	// 		int y1 = (v1.y+1.)*height/2.; 
-	// 		line(x0, y0, x1, y1, image, white);
-	// 	}
-	// }
-
-	// Vec2i t0[3] = {Vec2i(10, 70),   Vec2i(50, 160),  Vec2i(70, 80)}; 
-	// Vec2i t1[3] = {Vec2i(180, 50),  Vec2i(150, 1),   Vec2i(70, 180)}; 
-	// Vec2i t2[3] = {Vec2i(180, 150), Vec2i(120, 160), Vec2i(130, 180)}; 
-	// triangle(t0[0], t0[1], t0[2], image, red); 
-	// triangle(t1[0], t1[1], t1[2], image, white); 
-	// triangle(t2[0], t2[1], t2[2], image, green);
-
-	// Vec2i pts[3] = {Vec2i(10,10), Vec2i(100, 30), Vec2i(190, 160)}; 
-	// triangle(pts, image, red);
-	
 	image.flip_vertically(); // i want to have the origin at the left bottom corner of the image
 	image.write_tga_file("output.tga");
+
 	delete model;
 	return 0;
 }
-
-LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-	static HBITMAP hBitmap = nullptr;
-	static TGAImage image;
-
-	switch (uMsg) {
-	case WM_CREATE:
-		{
-			HDC hdc = GetDC(hwnd);
-			// if (image.Load("your_image.tga")) {  // 把"your_image.tga"换成你的文件路径
-			// 	hBitmap = CreateBitmapFromPixels(hdc, image);
-			// }
-			ReleaseDC(hwnd, hdc);
-		}
-		return 0;
-	case WM_PAINT:
-		{
-			// PAINTSTRUCT ps;
-			// HDC hdc = BeginPaint(hwnd, &ps);
-			// if (hBitmap) {
-			// 	HDC memDC = CreateCompatibleDC(hdc);
-			// 	HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, hBitmap);
-			// 	BitBlt(hdc, 0, 0, image.width, image.height, memDC, 0, 0, SRCCOPY);
-			// 	SelectObject(memDC, oldBmp);
-			// 	DeleteDC(memDC);
-			// }
-			// EndPaint(hwnd, &ps);
-			return 0;
-		}
-	case WM_DESTROY:
-		if (hBitmap) DeleteObject(hBitmap);
-		PostQuitMessage(0);
-		return 0;
-	}
-	return DefWindowProc(hwnd, uMsg, wParam, lParam);
-}
-
-// int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
-// 	const wchar_t* CLASS_NAME = L"TGAWindowClass";
-//
-// 	WNDCLASS wc = { };
-// 	wc.lpfnWndProc = WndProc;
-// 	wc.hInstance = hInstance;
-// 	wc.lpszClassName = CLASS_NAME;
-//
-// 	RegisterClass(&wc);
-//
-// 	HWND hwnd = CreateWindowEx(0, CLASS_NAME, L"Display TGA Image", 
-// 		WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, nullptr, nullptr, hInstance, nullptr);
-//
-// 	if (!hwnd) return 0;
-//
-// 	ShowWindow(hwnd, nCmdShow);
-//
-// 	MSG msg = { };
-// 	while (GetMessage(&msg, nullptr, 0, 0)) {
-// 		TranslateMessage(&msg);
-// 		DispatchMessage(&msg);
-// 	}
-// 	return 0;
-// }
 
