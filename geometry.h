@@ -20,7 +20,7 @@ template <class t> struct Vec2 {
     Vec2<t> operator +(const Vec2<t> &V) const { return Vec2<t>(x+V.x, y+V.y); }
     Vec2<t> operator -(const Vec2<t> &V) const { return Vec2<t>(x-V.x, y-V.y); }
     Vec2<t> operator *(float f)          const { return Vec2<t>(x*f, y*f); }
-    t& operator[](const int i) { if (x<=0) return x; else return y; }
+    t& operator[](const int i) { return i<=0 ? x : y; }
     template <class > friend std::ostream& operator<<(std::ostream& s, Vec2<t>& v);
 };
 

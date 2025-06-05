@@ -17,7 +17,7 @@ const int height = 800;
 const int depth  = 255;
 
 Vec3f camera(0,0,3);
-Vec3f light_dir(0,0,-1); // define light_dir
+Vec3f light_dir = Vec3f(1,-1,1).normalize();
 
 Matrix viewport(int x, int y, int w, int h) {
 	Matrix m = Matrix::identity(4);
@@ -157,7 +157,7 @@ void triangle(Vec2i *pts, TGAImage &image, const TGAColor &color)
 	}
 }
 
-void triangle(Vec3f *pts, Vec2f *uvs, float *zbuffer, TGAImage &image, Texture &texture) {
+void triangle(Vec3f *pts, Vec2f *uvs, int *zbuffer, TGAImage &image, float intensity, Texture &texture) {
 	Vec2f bboxmin( std::numeric_limits<float>::max(),  std::numeric_limits<float>::max());
 	Vec2f bboxmax(-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max());
 	Vec2f clamp(image.get_width()-1, image.get_height()-1);
@@ -183,17 +183,18 @@ void triangle(Vec3f *pts, Vec2f *uvs, float *zbuffer, TGAImage &image, Texture &
 			if (zbuffer[int(P.x+P.y*width)]<P.z) {
 				zbuffer[int(P.x+P.y*width)] = P.z;
 				TGAColor color = texture.get_color(puv);
-				image.set(P.x, P.y, color);
+				image.set(P.x, P.y, TGAColor(color.bgra[0] *intensity, color.bgra[1]*intensity, color.bgra[2]*intensity, 255));
 			}
 		}
 	}
 }
 
-void triangle(Vec3i t0, Vec3i t1, Vec3i t2, Vec2f uv0, Vec2f uv1, Vec2f uv2, TGAImage &image, float intensity, int *zbuffer, Texture &texture) {
+void triangle(Vec3i t0, Vec3i t1, Vec3i t2, Vec2f uv0, Vec2f uv1, Vec2f uv2,
+	float it0, float it1, float it2, TGAImage &image, float intensity, int *zbuffer, Texture &texture) {
 	if (t0.y==t1.y && t0.y==t2.y) return; // i dont care about degenerate triangles
-	if (t0.y>t1.y) { std::swap(t0, t1); std::swap(uv0, uv1); }
-	if (t0.y>t2.y) { std::swap(t0, t2); std::swap(uv0, uv2); }
-	if (t1.y>t2.y) { std::swap(t1, t2); std::swap(uv1, uv2); }
+	if (t0.y>t1.y) { std::swap(t0, t1); std::swap(uv0, uv1); std::swap(it0, it1); }
+	if (t0.y>t2.y) { std::swap(t0, t2); std::swap(uv0, uv2); std::swap(it0, it2); }
+	if (t1.y>t2.y) { std::swap(t1, t2); std::swap(uv1, uv2); std::swap(it1, it2); }
 
 	int total_height = t2.y-t0.y;
 	for (int i=0; i<total_height; i++) {
@@ -205,16 +206,19 @@ void triangle(Vec3i t0, Vec3i t1, Vec3i t2, Vec2f uv0, Vec2f uv1, Vec2f uv2, TGA
 		Vec3i B   = second_half ? t1  + Vec3f(t2-t1  )*beta : t0  + Vec3f(t1-t0  )*beta;
 		Vec2f uvA =               uv0 +      (uv2-uv0)*alpha;
 		Vec2f uvB = second_half ? uv1 +      (uv2-uv1)*beta : uv0 +      (uv1-uv0)*beta;
-		if (A.x>B.x) { std::swap(A, B); std::swap(uvA, uvB); }
+		float itA =			      it0 +      (it2-it0)*alpha;
+		float itB = second_half ? it1 +      (it2-it1)*beta : it0 +      (it1-it0)*beta;
+		if (A.x>B.x) { std::swap(A, B); std::swap(uvA, uvB); std::swap(itA, itB);}
 		for (int j=A.x; j<=B.x; j++) {
 			float phi = B.x==A.x ? 1. : (float)(j-A.x)/(float)(B.x-A.x);
 			Vec3i   P = Vec3f(A) + Vec3f(B-A)*phi;
 			Vec2f uvP =     uvA +   (uvB-uvA)*phi;
+			float itP  = itA + (itB-itA)*phi;
 			int idx = P.x+P.y*width;
 			if (zbuffer[idx]<P.z) {
 				zbuffer[idx] = P.z;
 				TGAColor color = texture.get_color(uvP);
-				image.set(P.x, P.y, TGAColor(color.r*intensity, color.g*intensity, color.b*intensity, 255));
+				image.set(P.x, P.y, color * itP);
 			}
 		}
 	}
@@ -268,21 +272,26 @@ int main(int argc, char** argv) {
 		Vec3f vert[3];
 		Vec3f screen_coords[3];
 		Vec2f uv[3];
+		Vec3f normal[3];
 		for (int j=0; j<3; j++) {
 			vert[j] = model->vert(face[j][0]);
 			//printf("vert[j].z = %f\n", vert[j].z);
-			//pts[j] = world2screen(vert[j]);
+			//screen_coords[j] = world2screen(vert[j]);
 			screen_coords[j] = m2v(ViewPort*projection*v2m(vert[j]));
 			//printf("screen_coord[j].z = %f\n", pts[j].z);
 			uv[j] = model->uv(face[j][1]);
-		} 
-		Vec3f n = (vert[2]-vert[0])^(vert[1]-vert[0]); 
-		n.normalize(); 
-		float intensity = n*light_dir; 
-		if (intensity>0) {
-			//triangle(pts, uv, zbuffer, image, texture);
-			triangle(screen_coords[0], screen_coords[1], screen_coords[2], uv[0], uv[1], uv[2], image, intensity, zbuffer, texture);
+			normal[j] = model->normal(face[j][2]);
 		}
+		triangle(screen_coords[0], screen_coords[1], screen_coords[2], uv[0], uv[1], uv[2],
+				normal[0] * light_dir, normal[1]* light_dir, normal[2]* light_dir, image, 0, zbuffer, texture);
+		// Vec3f n = (vert[2]-vert[0])^(vert[1]-vert[0]); 
+		// n.normalize(); 
+		// float intensity = n*light_dir; 
+		// if (intensity>0) {
+		// 	//triangle(screen_coords, uv, zbuffer, image, intensity, texture);
+		// 	triangle(screen_coords[0], screen_coords[1], screen_coords[2], uv[0], uv[1], uv[2],
+		// 		normal[0] * light_dir, normal[1]* light_dir, normal[2]* light_dir, image, intensity, zbuffer, texture);
+		// }
 	}
 
 	image.flip_vertically(); // i want to have the origin at the left bottom corner of the image

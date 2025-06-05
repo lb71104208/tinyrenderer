@@ -76,7 +76,7 @@ std::vector<Vec3i> Model::face(int idx) {
 
 Vec3f Model::normal(int i)
 {
-    return normals_[i];
+    return normals_[i].normalize();
 }
 
 Vec2f Model::uv(int i)
