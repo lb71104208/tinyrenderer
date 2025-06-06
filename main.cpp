@@ -18,6 +18,8 @@ const int depth  = 255;
 
 Vec3f camera(0,0,3);
 Vec3f light_dir = Vec3f(1,-1,1).normalize();
+Vec3f eye(1,1,3);
+Vec3f center(0,0,0);
 
 Matrix viewport(int x, int y, int w, int h) {
 	Matrix m = Matrix::identity(4);
@@ -29,6 +31,22 @@ Matrix viewport(int x, int y, int w, int h) {
 	m[1][1] = h/2.f;
 	m[2][2] = depth/2.f;
 	return m;
+}
+
+Matrix lookat(Vec3f eye, Vec3f center, Vec3f up)
+{
+	Vec3f z = (eye - center).normalize();
+	Vec3f x = (up ^ z).normalize();
+	Vec3f y = (z ^ x).normalize();
+	Matrix modelview = Matrix::identity(4);
+	for (int i=0; i<3; i++)
+	{
+		modelview[0][i] = x[i];
+		modelview[1][i] = y[i];
+		modelview[2][i] = z[i];
+		modelview[i][3] = -center[i];
+	}
+	return modelview;
 }
 
 Vec3f m2v(Matrix m) {
@@ -263,9 +281,10 @@ int main(int argc, char** argv) {
 	int *zbuffer = new int[width*height];
 	for (int i=width*height; i--; zbuffer[i] = std::numeric_limits<int>::min());
 
-	Matrix projection = Matrix::identity(4);
+	Matrix Projection = Matrix::identity(4);
+	Projection[3][2] = -1.f/(eye - center).norm();
 	Matrix ViewPort   = viewport(width/8, height/8, width*3/4, height*3/4);
-	projection[3][2] = -1.f/camera.z;
+	Matrix ModelView = lookat(eye,center, Vec3f(0,1,0));
 
 	for (int i=0; i<model->nfaces(); i++) { 
 		std::vector<Vec3i> face = model->face(i);
@@ -277,7 +296,7 @@ int main(int argc, char** argv) {
 			vert[j] = model->vert(face[j][0]);
 			//printf("vert[j].z = %f\n", vert[j].z);
 			//screen_coords[j] = world2screen(vert[j]);
-			screen_coords[j] = m2v(ViewPort*projection*v2m(vert[j]));
+			screen_coords[j] = m2v(ViewPort*Projection*ModelView*v2m(vert[j]));
 			//printf("screen_coord[j].z = %f\n", pts[j].z);
 			uv[j] = model->uv(face[j][1]);
 			normal[j] = model->normal(face[j][2]);
