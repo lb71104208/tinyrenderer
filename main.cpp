@@ -15,13 +15,15 @@ const TGAColor blue = TGAColor(0, 0, 255,   255);
 
 Model *model = nullptr;
 Texture *texture = nullptr;
+Texture *texture_normal = nullptr;
+Texture *texture_specular = nullptr;
 
 const int width  = 800;
 const int height = 800;
 const int depth  = 255;
 
 Vec3f camera(0,0,3);
-Vec3f light_dir = Vec3f(1,-1,1).normalize();
+Vec3f light_dir = Vec3f(1,1,1).normalize();
 Vec3f eye(1,1,3);
 Vec3f center(0,0,0);
 Vec3f up(0,1,0);
@@ -115,20 +117,31 @@ Vec3f world2screen(Vec3f v) {
 
 struct GouraudShader : IShader
 {
-	Vec3f varying_intensity;
+	mat<2,3,float> varying_uv;
+	mat<4,4,float> uniform_MV;
+	mat<4,4,float> uniform_MVIT;
 
 	virtual Vec4f vertex(int iface, int nthvert)
 	{
 		Vec4f gl_vertex = embed<4>(model->vert(iface, nthvert));
 		gl_vertex = Viewport*Projection*ModelView*gl_vertex;
-		varying_intensity[nthvert] = model->normal(iface, nthvert) * light_dir;
+		varying_uv.set_col(nthvert, model->uv(iface, nthvert));
 		return gl_vertex;
 	}
 
-	virtual bool fragment(Vec3f bar, TGAColor& color) override
+	virtual bool fragment(Vec3f bar, TGAColor& color)
 	{
-		float intensity = bar * varying_intensity;
-		color = TGAColor(255, 255, 255) * intensity;
+		Vec2f uv = varying_uv * bar;
+		Vec3f n = proj<3>(uniform_MVIT * embed<4>(texture_normal->get_normal(uv))).normalize();
+		Vec3f l = proj<3>(uniform_MV  *embed<4>(light_dir)).normalize();
+		Vec3f r = (n*(n * l * 2.f) - l).normalize();
+		float spec = pow(std::max(r.z, 0.0f), texture_specular->get_specular(uv));
+		float diff = std::max(0.f, n * l);
+		color = texture->get_color(uv);
+		for (int i = 0; i < 3; i++)
+		{
+			color[i] = std::min<float>(5 + color[i]*(diff + spec), 255);
+		}
 		return false;
 	}
 };
@@ -152,8 +165,12 @@ int main(int argc, char** argv) {
 	TGAImage zbuffer(width, height, TGAImage::GRAYSCALE);
 
 	texture = new Texture("obj/african_head_diffuse.tga");
+	texture_normal = new Texture("obj/african_head_nm.tga");
+	texture_specular = new Texture("obj/african_head_spec.tga");
 
 	GouraudShader shader;
+	shader.uniform_MV = Projection * ModelView;
+	shader.uniform_MVIT = (Projection * ModelView).invert_transpose();
 	for (int i = 0; i<model->nfaces(); i++)
 	{
 		Vec4f screen_coords[3];
