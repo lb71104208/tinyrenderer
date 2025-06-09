@@ -18,9 +18,12 @@ public:
 	int nnormals();
 	int nuvs();
 	Vec3f vert(int i);
+	Vec3f vert(int f, int i);
 	std::vector<Vec3i> face(int idx);
 	Vec3f normal(int i);
+	Vec3f normal(int f, int i);
 	Vec2f uv(int i);
+	Vec2f uv(int f, int i);
 };
 
 #endif //__MODEL_H__

@@ -70,7 +70,8 @@ int Model::nuvs()
     return (int)uvs_.size();
 }
 
-std::vector<Vec3i> Model::face(int idx) {
+std::vector<Vec3i> Model::face(int idx)
+{
     return faces_[idx];
 }
 
@@ -79,12 +80,26 @@ Vec3f Model::normal(int i)
     return normals_[i].normalize();
 }
 
+Vec3f Model::normal(int f, int i)
+{
+    return normals_[faces_[f][i][2]];
+}
+
 Vec2f Model::uv(int i)
 {
     return uvs_[i];
+}
+
+Vec2f Model::uv(int f, int i)
+{
+    return uvs_[faces_[f][i][1]];
 }
 
 Vec3f Model::vert(int i) {
     return verts_[i];
 }
 
+Vec3f Model::vert(int f, int i)
+{
+    return verts_[faces_[f][i][0]];
+}
