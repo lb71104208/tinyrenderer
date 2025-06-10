@@ -71,28 +71,6 @@ void line(Vec2i v0, Vec2i v1, TGAImage &image, const TGAColor &color)
 	line(v0.x, v0.y, v1.x, v1.y, image, color);
 }
 
-void triangle(Vec2i t0, Vec2i t1, Vec2i t2, TGAImage &image, const TGAColor &color)
-{
-	if (t0.y==t1.y && t0.y==t2.y) return; // I dont care about degenerate triangles 
-	// sort the vertices, t0, t1, t2 lower−to−upper (bubblesort yay!) 
-	if (t0.y>t1.y) std::swap(t0, t1); 
-	if (t0.y>t2.y) std::swap(t0, t2); 
-	if (t1.y>t2.y) std::swap(t1, t2); 
-	int total_height = t2.y-t0.y; 
-	for (int i=0; i<total_height; i++) { 
-		bool second_half = i>t1.y-t0.y || t1.y==t0.y; 
-		int segment_height = second_half ? t2.y-t1.y : t1.y-t0.y; 
-		float alpha = (float)i/total_height; 
-		float beta  = (float)(i-(second_half ? t1.y-t0.y : 0))/segment_height; // be careful: with above conditions no division by zero here 
-		Vec2i A =               t0 + (t2-t0)*alpha; 
-		Vec2i B = second_half ? t1 + (t2-t1)*beta : t0 + (t1-t0)*beta; 
-		if (A.x>B.x) std::swap(A, B); 
-		for (int j=A.x; j<=B.x; j++) { 
-			image.set(j, t0.y+i, color); // attention, due to int casts t0.y+i != A.y 
-		} 
-	} 
-}
-
 void rasterize(Vec2i p0, Vec2i p1, TGAImage &image, const TGAColor &color, int ybuffer[])
 {
 	if (p0.x > p1.x)
@@ -111,49 +89,51 @@ void rasterize(Vec2i p0, Vec2i p1, TGAImage &image, const TGAColor &color, int y
 	}
 }
 
-Vec3f world2screen(Vec3f v) {
-	return Vec3f(int((v.x+1.)*width/2.+.5), int((v.y+1.)*height/2.+.5), v.z);
-}
+struct Shader : public IShader {
+	mat<2,3,float> varying_uv;  // triangle uv coordinates, written by the vertex shader, read by the fragment shader
+	mat<3,3,float> varying_nrm; // normal per vertex to be interpolated by FS
+	mat<4,3, float> varying_tri;
+	mat<3,3,float> ndc_tri;
 
-struct GouraudShader : IShader
-{
-	mat<2,3,float> varying_uv;
-	mat<4,4,float> uniform_MV;
-	mat<4,4,float> uniform_MVIT;
-
-	virtual Vec4f vertex(int iface, int nthvert)
-	{
-		Vec4f gl_vertex = embed<4>(model->vert(iface, nthvert));
-		gl_vertex = Viewport*Projection*ModelView*gl_vertex;
+	virtual Vec4f vertex(int iface, int nthvert) {
 		varying_uv.set_col(nthvert, model->uv(iface, nthvert));
-		return gl_vertex;
+		varying_nrm.set_col(nthvert, proj<3>((Projection*ModelView).invert_transpose()*embed<4>(model->normal(iface, nthvert), 0.f)));
+		Vec4f gl_Vertex = Projection*ModelView*embed<4>(model->vert(iface, nthvert));
+		varying_tri.set_col(nthvert, gl_Vertex);
+		ndc_tri.set_col(nthvert, proj<3>(gl_Vertex/gl_Vertex[3]));
+		return gl_Vertex;
 	}
 
-	virtual bool fragment(Vec3f bar, TGAColor& color)
-	{
-		Vec2f uv = varying_uv * bar;
-		Vec3f n = proj<3>(uniform_MVIT * embed<4>(texture_normal->get_normal(uv))).normalize();
-		Vec3f l = proj<3>(uniform_MV  *embed<4>(light_dir)).normalize();
-		Vec3f r = (n*(n * l * 2.f) - l).normalize();
-		float spec = pow(std::max(r.z, 0.0f), texture_specular->get_specular(uv));
-		float diff = std::max(0.f, n * l);
-		color = texture->get_color(uv);
-		for (int i = 0; i < 3; i++)
-		{
-			color[i] = std::min<float>(5 + color[i]*(diff + spec), 255);
-		}
+	virtual bool fragment(Vec3f bar, TGAColor &color) {
+		Vec3f bn = (varying_nrm*bar).normalize();
+		Vec2f uv = varying_uv*bar;
+
+		mat<3,3,float> A;
+		A[0] = ndc_tri.col(1) - ndc_tri.col(0);
+		A[1] = ndc_tri.col(2) - ndc_tri.col(0);
+		A[2] = bn;
+
+		mat<3,3,float> AI = A.invert();
+		Vec3f i = AI * Vec3f(varying_uv[0][1] - varying_uv[0][0], varying_uv[0][2] - varying_uv[0][0], 0);
+		Vec3f j = AI * Vec3f(varying_uv[1][1] - varying_uv[1][0], varying_uv[1][2] - varying_uv[1][0], 0);
+
+		mat<3,3,float> B;
+		B.set_col(0, i.normalize());
+		B.set_col(1, j.normalize());
+		B.set_col(2, bn);
+
+		Vec3f n = (B*texture_normal->get_normal(uv)).normalize();
+		
+		float diff = std::max(0.f, n*light_dir);
+		color = texture->get_color(uv)*diff;
 		return false;
 	}
 };
 
 int main(int argc, char** argv) {
-	if (argc == 2)
-	{
-		model = new Model(argv[1]);
-	}
-	else
-	{
-		model = new Model("obj/african_head.obj");
+	if (2>argc) {
+		std::cerr << "Usage: " << argv[0] << " obj name" << std::endl;
+		return 1;
 	}
 
 	lookat(eye, center, up);
@@ -162,31 +142,35 @@ int main(int argc, char** argv) {
 	light_dir.normalize();
 	
 	TGAImage image(width, height, TGAImage::RGB);
-	TGAImage zbuffer(width, height, TGAImage::GRAYSCALE);
+	float *zbuffer = new float[width*height];
+	for (int i=width*height; i--; zbuffer[i] = -std::numeric_limits<float>::max());
+	
+	lookat(eye, center, up);
+	viewport(width/8, height/8, width*3/4, height*3/4);
+	projection(-1.f/(eye-center).norm());
+	light_dir = proj<3>((Projection*ModelView*embed<4>(light_dir, 0.f))).normalize();
 
-	texture = new Texture("obj/african_head_diffuse.tga");
-	texture_normal = new Texture("obj/african_head_nm.tga");
-	texture_specular = new Texture("obj/african_head_spec.tga");
-
-	GouraudShader shader;
-	shader.uniform_MV = Projection * ModelView;
-	shader.uniform_MVIT = (Projection * ModelView).invert_transpose();
-	for (int i = 0; i<model->nfaces(); i++)
-	{
-		Vec4f screen_coords[3];
-		for (int j = 0; j<3; j++)
-		{
-			screen_coords[j] = shader.vertex(i, j);
+	for (int m=1; m<argc; m++) {
+		model = new Model((std::string("obj/") + argv[m] + ".obj").c_str());
+		texture = new Texture((std::string("obj/") + argv[m] + "_diffuse.tga").c_str());
+		texture_normal = new Texture((std::string("obj/") + argv[m] + "_nm_tangent.tga").c_str());
+		texture_specular = new Texture((std::string("obj/") + argv[m] + "_spec.tga").c_str());
+		Shader shader;
+		for (int i=0; i<model->nfaces(); i++) {
+			for (int j=0; j<3; j++) {
+				shader.vertex(i, j);
+			}
+			triangle(shader.varying_tri, shader, image, zbuffer);
 		}
-		triangle(screen_coords, shader, image, zbuffer);
+		delete model;
+		delete texture;
+		delete texture_normal;
+		delete texture_specular;
 	}
 	
-	image.  flip_vertically(); // to place the origin in the bottom left corner of the image
-	zbuffer.flip_vertically();
-	image.  write_tga_file("output.tga");
-	zbuffer.write_tga_file("zbuffer.tga");
+	image.flip_vertically(); // to place the origin in the bottom left corner of the image
+	image.write_tga_file("output.tga");
 	
-	delete model;
 	return 0;
 }
 
